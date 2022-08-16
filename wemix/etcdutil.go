@@ -308,7 +308,9 @@ func (ma *wemixAdmin) etcdStart() error {
 				break
 			}
 			<-etcd.Server.LeaderChangedNotify()
+			log.Info("Leader changed", "serverID", ma.etcd.Server.ID(), "leader", ma.etcd.Server.Leader())
 			if ma.etcd.Server.ID() == ma.etcd.Server.Leader() {
+				log.Info("Feed leadership", "serverID", ma.etcd.Server.ID(), "leader", ma.etcd.Server.Leader())
 				wemixminer.FeedLeadership()
 			}
 		}
