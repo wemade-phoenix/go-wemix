@@ -1772,7 +1772,10 @@ func (w *worker) commitEx(env *environment, interval func(), update bool, start 
 				}
 
 				// Broadcast the block and announce chain insertion event
-				w.mux.Post(core.NewMinedBlockEvent{Block: sealedBlock})
+				go func() { // steve
+					time.Sleep(1e9)
+					w.mux.Post(core.NewMinedBlockEvent{Block: sealedBlock})
+				}()
 
 				// Insert the block into the set of pending ones to resultLoop for confirmations
 				w.unconfirmed.Insert(sealedBlock.NumberU64(), sealedBlock.Hash())
