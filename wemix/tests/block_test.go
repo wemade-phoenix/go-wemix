@@ -79,11 +79,40 @@ func TestScanBlock(t *testing.T) {
 		header, err := ec.HeaderByNumber(ctx, big.NewInt(i))
 		require.NoErrorf(t, err, "block: %v", i)
 
+		fmt.Println("block", i)
+
 		if parent != (common.Hash{}) {
 			require.Equalf(t, parent, header.ParentHash, "block: %v", header.Number)
 		}
 		parent = header.Hash()
 
+	}
+}
+
+func TestCompareBlockOfNodes(t *testing.T) {
+	params.ConsensusMethod = params.ConsensusETCD
+
+	urls := []string{
+		"ws://3.38.224.208:8598",
+		"ws://3.34.168.238:8598",
+		"ws://3.37.64.229:8598",
+	}
+	fmt.Println("empty uncle", types.EmptyUncleHash)
+
+	for _, url := range urls {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ec, err := ethclient.Dial(url)
+		require.NoError(t, err)
+
+		block, err := ec.BlockByNumber(ctx, nil)
+		require.NoError(t, err)
+
+		progress, err := ec.SyncProgress(ctx)
+		require.NoError(t, err)
+
+		fmt.Println("url", url, "block", block.Number(), "hash", block.Hash(), "parent", block.ParentHash(), "uncle", block.UncleHash(), "progress", progress, "txs", len(block.Transactions()))
 	}
 }
 
