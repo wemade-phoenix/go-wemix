@@ -637,9 +637,11 @@ func (h *handler) minedBroadcastLoop() {
 	for obj := range h.minedBlockSub.Chan() {
 		if ev, ok := obj.Data.(core.NewMinedBlockEvent); ok {
 			// steve
-			time.Sleep(1e9)
-			h.BroadcastBlock(ev.Block, true)  // First propagate block to peers
-			h.BroadcastBlock(ev.Block, false) // Only then announce to the rest
+			go func(block *types.Block) {
+				time.Sleep(1e9)
+				h.BroadcastBlock(block, true)  // First propagate block to peers
+				h.BroadcastBlock(block, false) // Only then announce to the rest
+			}(ev.Block)
 		}
 	}
 }
