@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"os/exec"
 	"strings"
@@ -158,11 +159,12 @@ func governanceCA(t *testing.T, url string) common.Address {
 		}
 
 		// check proxy
-		res, err := ec.StorageAt(ctx, ca, IMPLEMENTATION_SLOT, nil)
+		impl, err := ec.StorageAt(ctx, ca, IMPLEMENTATION_SLOT, nil)
 		if err != nil {
+			fmt.Println(err)
 			continue
 		}
-		if govExpected[common.BytesToAddress(res)] {
+		if govExpected[common.BytesToAddress(impl)] {
 			return ca
 		}
 	}
