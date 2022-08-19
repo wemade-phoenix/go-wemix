@@ -2,18 +2,23 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"math/big"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcutil/hdkeychain"
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/stretchr/testify/require"
 	bip39 "github.com/tyler-smith/go-bip39"
 )
@@ -123,4 +128,43 @@ func unpack(t *testing.T, data []byte, types ...string) (unpacked []interface{})
 
 func utf8ToHash(utf string) common.Hash {
 	return common.BytesToHash(common.RightPadBytes([]byte(utf), 32))
+}
+
+func governanceCA(t *testing.T, url string) common.Address {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ec, err := ethclient.Dial(url)
+	require.NoError(t, err)
+
+	genesisBlock, err := ec.BlockByNumber(ctx, big.NewInt(0))
+	require.NoError(t, err)
+
+	IMPLEMENTATION_SLOT := common.HexToHash("0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
+	govExpected := map[common.Address]bool{}
+
+	for i := uint64(0); i < 100; i++ {
+		ca := crypto.CreateAddress(genesisBlock.Coinbase(), i)
+
+		_, err := ec.CallContract(ctx, ethereum.CallMsg{To: &ca, Data: pack(t, "getMemberLength()")}, nil)
+		if err != nil {
+			if err.Error() == vm.ErrExecutionReverted.Error() {
+				continue
+			} else {
+				require.NoError(t, err)
+			}
+		} else {
+			govExpected[ca] = true
+		}
+
+		// check proxy
+		res, err := ec.StorageAt(ctx, ca, IMPLEMENTATION_SLOT, nil)
+		if err != nil {
+			continue
+		}
+		if govExpected[common.BytesToAddress(res)] {
+			return ca
+		}
+	}
+	return common.Address{}
 }

@@ -7,64 +7,28 @@ import (
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGovMember(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	ec, err := ethclient.Dial(wsurl)
-	require.NoError(t, err)
-
-	blockNumber := big.NewInt(40)
-
-	block, err := ec.BlockByNumber(ctx, blockNumber)
-	require.NoError(t, err)
-
-	// genesis coinbase
-	var (
-		gc                  = block.Coinbase()
-		IMPLEMENTATION_SLOT = common.HexToHash("0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")
-	)
+	url := privateURL
 
 	// search gov proxy contract
-	gov := func() common.Address {
-		govExpected := map[common.Address]bool{}
-		for i := uint64(0); i < 100; i++ {
-			ca := crypto.CreateAddress(gc, i)
-
-			_, err := ec.CallContract(ctx, ethereum.CallMsg{To: &ca, Data: pack(t, "getMemberLength()")}, nil)
-			if err != nil {
-				if err.Error() == vm.ErrExecutionReverted.Error() {
-					continue
-				} else {
-					require.NoError(t, err)
-				}
-			} else {
-				govExpected[ca] = true
-			}
-
-			// check proxy
-			res, err := ec.StorageAt(ctx, ca, IMPLEMENTATION_SLOT, nil)
-			if err != nil {
-				continue
-			}
-			impl := common.BytesToAddress(res)
-			if govExpected[impl] {
-				return ca
-			}
-		}
-		return common.Address{}
-	}()
+	gov := governanceCA(t, url)
 	require.NotEqual(t, common.Address{}, gov)
 	t.Logf("gov contract: %v", gov)
 
-	// all members
-	members := make([]common.Address, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ec, err := ethclient.Dial(url)
+	require.NoError(t, err)
+
+	// coinbase
+	coinbases := make([]common.Address, 0)
 	{
 		// call member length
 		res, err := ec.CallContract(ctx, ethereum.CallMsg{To: &gov, Data: pack(t, "getMemberLength()")}, nil)
@@ -75,10 +39,12 @@ func TestGovMember(t *testing.T) {
 
 		// call all members
 		for i := int64(1); i <= memberLength.Int64(); i++ {
+			// member
 			data, err := ec.CallContract(ctx, ethereum.CallMsg{To: &gov, Data: pack(t, "getMember(uint256)", big.NewInt(i))}, nil)
 			require.NoError(t, err)
-			members = append(members, unpack(t, data, "address")[0].(common.Address))
-			t.Logf("%vth member is %v", i, members[i-1])
+			coinbase := unpack(t, data, "address")[0].(common.Address)
+			coinbases = append(coinbases, coinbase)
+			t.Logf("coinbase: %v", coinbase)
 		}
 	}
 
@@ -88,7 +54,7 @@ func TestGovMember(t *testing.T) {
 		enode string
 		ip    string
 		port  *big.Int
-		node  common.Address
+		miner common.Address
 	}
 	nodes := make([]*nodeInfo, 0)
 	{
@@ -106,44 +72,65 @@ func TestGovMember(t *testing.T) {
 
 			//(bytes memory name, bytes memory enode, bytes memory ip, uint port)
 			output := unpack(t, data, "bytes", "bytes", "bytes", "uint256")
-			nodes = append(nodes, &nodeInfo{
+
+			node := &nodeInfo{
 				name:  string(output[0].([]byte)),
 				enode: common.Bytes2Hex(output[1].([]byte)),
 				ip:    string(output[2].([]byte)),
 				port:  output[3].(*big.Int),
-				node: func(enode []byte) common.Address {
+				miner: func(enode []byte) common.Address {
 					if len(enode) > 0 {
 						return common.BytesToAddress(crypto.Keccak256(output[1].([]byte))[12:])
 					}
 					return common.Address{}
 				}(output[1].([]byte)),
-			})
-			t.Logf("%vth node is %v", i, nodes[i-1].node)
+			}
+			t.Log(i, node.name, node.enode, node.ip, node.port, node.miner)
+
+			nodes = append(nodes, node)
+		}
+
+		// getReward
+		for i := int64(1); i <= nodesLength; i++ {
+			data, err := ec.CallContract(ctx, ethereum.CallMsg{To: &gov, Data: pack(t, "getReward(uint256)", big.NewInt(i))}, nil)
+			require.NoError(t, err)
+
+			reward := unpack(t, data, "address")[0].(common.Address)
+			require.Equal(t, coinbases[i-1], reward, i)
 		}
 	}
 
-	require.Equal(t, len(nodes), len(members))
+	require.Equal(t, len(nodes), len(coinbases))
 
 	// pair node and member
-	nodeMemberMap := map[common.Address]common.Address{}
-	for i, member := range members {
-		nodeMemberMap[member] = nodes[i].node
+	coinbaseMemberMap := map[common.Address]*nodeInfo{}
+	for i, coinbase := range coinbases {
+		coinbaseMemberMap[coinbase] = nodes[i]
 	}
 
 	// check block's coinbase and signer with pairs got from gov contract
-	for i := int64(549898); i < 549998; i++ {
-		block, err := ec.BlockByNumber(ctx, big.NewInt(i))
+	for i := int64(1); i < 100; i++ {
+		header, err := ec.HeaderByNumber(ctx, big.NewInt(i))
 		require.NoError(t, err)
 
 		// recover
-		pubkey, err := crypto.Ecrecover(block.Root().Bytes(), block.Header().MinerNodeSig)
+		pubkey, err := crypto.Ecrecover(header.Root.Bytes(), header.MinerNodeSig)
 		require.NoError(t, err)
 		got := common.BytesToAddress(crypto.Keccak256(pubkey[1:])[12:])
-		require.Equal(t, common.BytesToAddress(crypto.Keccak256(block.MinerNodeId())[12:]), got)
+		require.Equal(t, common.BytesToAddress(crypto.Keccak256(header.MinerNodeId)[12:]), got)
 
-		want := nodeMemberMap[block.Coinbase()]
+		want, ok := coinbaseMemberMap[header.Coinbase]
+		require.True(t, ok)
 
-		require.Equalf(t, want, got, "block: %v, coinbase: %v, want: %v, got: %v", i, block.Coinbase().Hex(), want, got)
+		if want.miner != got {
+			t.Logf("block: %v, coinbase: %v, want: %v, got: %v", i, hexutil.Encode(header.Coinbase[:]), hexutil.Encode(want.miner[:]), hexutil.Encode(got[:]))
+		}
+
+		//require.Equalf(t, want.miner, got, "block: %v, coinbase: %v, want: %v, got: %v", i, hexutil.Encode(header.Coinbase[:]), hexutil.Encode(want.miner[:]), hexutil.Encode(got[:]))
+
+		if i%1000 == 0 {
+			t.Logf("read up to %v block, ", i)
+		}
 	}
 
 }
